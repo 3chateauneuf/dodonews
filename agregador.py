@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""
+DodoNews - Agrégateur de nouvelles matinal.
+
+Qué hace este script, paso a paso:
+  1. Descarga los titulares de varias fuentes RSS (France, Île-de-France, Chili).
+  2. Pide a Claude que elija las más importantes y las resuma de forma neutra.
+  3. Inserta esos resúmenes en la plantilla 'template.html'.
+  4. Guarda el resultado en 'output/index.html', listo para publicar.
+
+El diseño de la página vive en template.html (HTML + CSS + JS legibles).
+Este script NO genera diseño: solo rellena los datos. Así, si quieres cambiar
+la apariencia, editas template.html sin tocar este código, y viceversa.
+"""
+
 import feedparser
 import json
 import os
@@ -6,6 +20,11 @@ import re
 from datetime import datetime
 from anthropic import Anthropic
 
+
+# ---------------------------------------------------------------------------
+# FUENTES RSS
+# Añade o quita URLs libremente. Cada región es una clave.
+# ---------------------------------------------------------------------------
 FEEDS = {
     "France": [
         "https://www.france24.com/fr/rss",
@@ -20,116 +39,128 @@ FEEDS = {
     ],
 }
 
-MOIS = {1:"janvier",2:"février",3:"mars",4:"avril",5:"mai",6:"juin",
-        7:"juillet",8:"août",9:"septembre",10:"octobre",11:"novembre",12:"décembre"}
+# Cuántos titulares leer por fuente antes de pasárselos a Claude.
+# Claude elegirá luego los mejores; pedimos de más para que tenga dónde elegir.
+TITRES_PAR_FLUX = 8
+
+# Modelo de Claude usado para resumir. Sonnet es rápido, barato y suficiente
+# para sintetizar noticias. Cámbialo aquí si algún día quieres otro.
+MODELE = "claude-sonnet-4-6"
 
 
-def extract_news():
-    out = {}
+def extraire_titres():
+    """Descarga los titulares de todas las fuentes y los agrupa por región."""
+    resultat = {}
     for region, urls in FEEDS.items():
-        out[region] = []
+        resultat[region] = []
         for url in urls:
             try:
-                feed = feedparser.parse(url)
-                for e in feed.entries[:6]:
-                    out[region].append({
-                        "title": e.get("title", ""),
-                        "link": e.get("link", "#"),
+                flux = feedparser.parse(url)
+                for entree in flux.entries[:TITRES_PAR_FLUX]:
+                    resultat[region].append({
+                        "titre": entree.get("title", ""),
+                        "lien": entree.get("link", "#"),
+                        # Nombre legible de la fuente (ej. "Le Monde").
+                        "source": flux.feed.get("title", "Source"),
                     })
-            except Exception as err:
-                print(f"  feed KO {url}: {err}")
-        print(f"  {region}: {len(out[region])} titres")
-    return out
+            except Exception as erreur:
+                print(f"  ⚠️  Flux indisponible ({url}) : {erreur}")
+        print(f"  {region} : {len(resultat[region])} titres récupérés")
+    return resultat
 
 
-def process_with_claude(noticias):
+def resumer_avec_claude(titres):
+    """Pide a Claude que seleccione y resuma las noticias de forma neutra."""
     client = Anthropic()
-    prompt = (
+
+    consigne = (
         "Tu es le rédacteur de DodoNews, un résumé matinal minimaliste.\n"
-        "Pour chaque région, choisis les 3 nouvelles les plus importantes.\n"
-        "Résume chacune en 30 mots maximum, ton direct, sans jargon.\n"
-        "Garde le lien d'origine.\n\n"
-        f"{json.dumps(noticias, ensure_ascii=False, indent=2)}\n\n"
-        "Réponds UNIQUEMENT avec ce JSON, sans texte autour:\n"
-        '{"France":[{"titre":"...","resume":"...","lien":"..."}],'
-        '"Île-de-France":[...],"Chili":[...]}'
+        "À partir des titres fournis pour chaque région :\n"
+        "  1. Choisis les nouvelles les plus importantes (jusqu'à 6 par région).\n"
+        "  2. Rédige pour chacune un résumé NEUTRE et factuel de 30 mots maximum,\n"
+        "     sans opinion, sans adjectif inutile.\n"
+        "  3. Reformule le titre de façon claire (ne copie pas mot à mot).\n"
+        "  4. Conserve le nom de la source et le lien d'origine.\n\n"
+        "Titres du jour :\n"
+        f"{json.dumps(titres, ensure_ascii=False, indent=2)}\n\n"
+        "Réponds UNIQUEMENT avec ce JSON, sans aucun texte autour :\n"
+        '{\n'
+        '  "France": [\n'
+        '    {"titre": "...", "resume": "...", "source": "...", "lien": "..."}\n'
+        '  ],\n'
+        '  "Île-de-France": [ ... ],\n'
+        '  "Chili": [ ... ]\n'
+        '}'
     )
 
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}],
+    reponse = client.messages.create(
+        model=MODELE,
+        max_tokens=2500,
+        messages=[{"role": "user", "content": consigne}],
     )
-    texte = resp.content[0].text
+
+    texte = reponse.content[0].text
+
+    # Claude debería devolver JSON puro, pero por seguridad extraemos el objeto
+    # si viniera rodeado de texto.
     try:
         return json.loads(texte)
     except json.JSONDecodeError:
-        m = re.search(r"\{.*\}", texte, re.DOTALL)
-        if m:
-            return json.loads(m.group())
+        trouve = re.search(r"\{.*\}", texte, re.DOTALL)
+        if trouve:
+            return json.loads(trouve.group())
         raise
 
 
-def generate_html(data):
-    now = datetime.now()
-    jour = f"{now.day} {MOIS[now.month]} {now.year}"
+def formater_donnees_js(donnees):
+    """Convierte el diccionario de noticias en el objeto JavaScript NOUVELLES."""
+    # json.dumps produce un objeto válido también en JavaScript.
+    # ensure_ascii=False conserva los acentos; indent=2 lo deja legible.
+    corps = json.dumps(donnees, ensure_ascii=False, indent=2)
+    return "const NOUVELLES = " + corps + ";"
 
-    corps = ""
-    for region, items in data.items():
-        if not items:
-            continue
-        corps += f"    <h2>{region}</h2>\n"
-        for it in items:
-            titre = it.get("titre", "")
-            resume = it.get("resume", "")
-            lien = it.get("lien", "#")
-            corps += (
-                f'    <article><a href="{lien}" target="_blank">'
-                f"<strong>{titre}</strong><p>{resume}</p></a></article>\n"
-            )
 
-    return f"""<!DOCTYPE html>
-<html lang="fr">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DodoNews</title>
-<style>
-body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-max-width:600px;margin:0 auto;padding:24px;color:#222;line-height:1.5}}
-h1{{font-size:2.6em;font-weight:300;letter-spacing:-1px;margin:0}}
-.sub{{color:#888;font-size:.9em;margin:4px 0 40px}}
-h2{{font-size:1.2em;margin:40px 0 16px;padding-bottom:8px;border-bottom:1px solid #ddd}}
-article{{margin-bottom:18px}}
-article a{{text-decoration:none;color:inherit;display:block}}
-article a:hover{{opacity:.6}}
-article strong{{display:block;margin-bottom:4px}}
-article p{{margin:0;color:#555;font-size:.95em}}
-footer{{margin-top:60px;color:#aaa;font-size:.85em;text-align:center}}
-</style>
-</head>
-<body>
-    <h1>DodoNews</h1>
-    <p class="sub">{jour}</p>
-{corps}
-    <footer>Parce que tu n'as pas le temps le matin</footer>
-</body>
-</html>"""
+def construire_page(donnees, heure):
+    """Lee template.html y sustituye los datos y la hora entre las marcas."""
+    with open("template.html", encoding="utf-8") as f:
+        modele = f.read()
+
+    # Reemplazo del bloque de datos, delimitado por las marcas del template.
+    bloc_donnees = formater_donnees_js(donnees)
+    modele = re.sub(
+        r"/\* DODONEWS_DATA_DEBUT \*/.*?/\* DODONEWS_DATA_FIN \*/",
+        "/* DODONEWS_DATA_DEBUT */\n" + bloc_donnees + "\n/* DODONEWS_DATA_FIN */",
+        modele,
+        flags=re.DOTALL,
+    )
+
+    # Reemplazo de la hora de actualización.
+    modele = re.sub(
+        r"/\* DODONEWS_HEURE_DEBUT \*/.*?/\* DODONEWS_HEURE_FIN \*/",
+        '/* DODONEWS_HEURE_DEBUT */\nconst HEURE_MAJ = "' + heure + '";\n/* DODONEWS_HEURE_FIN */',
+        modele,
+        flags=re.DOTALL,
+    )
+
+    return modele
 
 
 def main():
-    print("Extraction...")
-    noticias = extract_news()
+    print("1/3  Récupération des titres…")
+    titres = extraire_titres()
 
-    print("Traitement Claude...")
-    data = process_with_claude(noticias)
+    print("2/3  Résumé par Claude…")
+    donnees = resumer_avec_claude(titres)
 
-    print("Génération HTML...")
+    print("3/3  Génération de la page…")
+    heure = datetime.now().strftime("%Hh%M")
+    page = construire_page(donnees, heure)
+
     os.makedirs("output", exist_ok=True)
     with open("output/index.html", "w", encoding="utf-8") as f:
-        f.write(generate_html(data))
+        f.write(page)
 
-    print("OK -> output/index.html")
+    print("✓  Terminé : output/index.html")
 
 
 if __name__ == "__main__":
