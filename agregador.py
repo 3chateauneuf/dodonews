@@ -44,13 +44,10 @@ FEEDS = {
         "https://www.francebleu.fr/rss/paris/rubrique/infos.xml",
     ],
     "Chili": [
-        # BioBio via FeedBurner (Google) : contourne le blocage du serveur direct.
+        
         "https://feeds.feedburner.com/radiobiobio/NNeJ",
-        # La Tercera, quotidien national de référence.
-        "https://www.latercera.com/arc/outboundfeeds/rss/?outputType=xml",
-          # El Dínamo — actualité nationale (WordPress /feed/, très fiable).
+        "https://www.latercera.com/arc/outboundfeeds/rss/?outputType=xml",      
         "https://www.eldinamo.cl/feed/",
-        # El Mostrador — média de référence, politique et affaires publiques.
         "https://www.elmostrador.cl/feed/",
     ],
 }
