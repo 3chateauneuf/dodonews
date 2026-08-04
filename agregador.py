@@ -17,8 +17,17 @@ import feedparser
 import json
 import os
 import re
+import urllib.request
 from datetime import datetime
 from anthropic import Anthropic
+
+
+# Algunos serveurs refusent les requêtes sans navigateur (erreur 403).
+# On se présente donc comme un navigateur classique.
+NAVIGATEUR = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -31,11 +40,14 @@ FEEDS = {
         "https://www.lemonde.fr/rss/une.xml",
     ],
     "Île-de-France": [
+        "https://feeds.leparisien.fr/leparisien/rss/paris-75",
         "https://www.francebleu.fr/rss/paris/rubrique/infos.xml",
     ],
     "Chili": [
-        "https://www.biobiochile.cl/rss.xml",
-        "https://www.t13.cl/rss",
+        # Note : ces flux couvrent l'Amérique latine, pas uniquement le Chili.
+        # Ils viennent de domaines qui répondent de façon fiable.
+        "https://www.france24.com/fr/am%C3%A9riques/rss",
+        "https://www.rfi.fr/fr/am%C3%A9riques/rss",
     ],
 }
 
@@ -48,24 +60,46 @@ TITRES_PAR_FLUX = 8
 MODELE = "claude-sonnet-4-6"
 
 
+def telecharger_flux(url):
+    """Descarga un feed presentándose como navegador. Devuelve el feed parseado.
+
+    Muchos servidores devuelven 403 si la petición no parece venir de un
+    navegador. Por eso descargamos con urllib enviando un User-Agent, y luego
+    se lo pasamos a feedparser ya descargado.
+    """
+    requete = urllib.request.Request(url, headers={"User-Agent": NAVIGATEUR})
+    with urllib.request.urlopen(requete, timeout=15) as reponse:
+        donnees = reponse.read()
+    return feedparser.parse(donnees)
+
+
 def extraire_titres():
-    """Descarga los titulares de todas las fuentes y los agrupa por región."""
+    """Descarga los titulares de todas las fuentes y los agrupa por región.
+
+    Imprime un diagnóstico claro por cada feed: cuántos titulares trajo, o
+    exactamente qué error dio. Así, mirando el log de GitHub Actions, sabes
+    de un vistazo qué fuente funciona y cuál hay que reemplazar.
+    """
     resultat = {}
     for region, urls in FEEDS.items():
         resultat[region] = []
+        print(f"\n  {region} :")
         for url in urls:
             try:
-                flux = feedparser.parse(url)
-                for entree in flux.entries[:TITRES_PAR_FLUX]:
+                flux = telecharger_flux(url)
+                titres = flux.entries[:TITRES_PAR_FLUX]
+                for entree in titres:
                     resultat[region].append({
                         "titre": entree.get("title", ""),
                         "lien": entree.get("link", "#"),
-                        # Nombre legible de la fuente (ej. "Le Monde").
                         "source": flux.feed.get("title", "Source"),
                     })
+                print(f"    ✓ {len(titres):2d} titres — {url}")
             except Exception as erreur:
-                print(f"  ⚠️  Flux indisponible ({url}) : {erreur}")
-        print(f"  {region} : {len(resultat[region])} titres récupérés")
+                # Mostramos el tipo de error (ej. HTTP 403, timeout) y la URL,
+                # para poder diagnosticar sin adivinar.
+                print(f"    ✗ ÉCHEC ({type(erreur).__name__}) — {url}")
+        print(f"    → total {region} : {len(resultat[region])} titres")
     return resultat
 
 
