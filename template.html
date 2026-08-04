@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DodoNews</title>
+
+<style>
+  /* ---------------------------------------------------------------------------
+     PALETA DE COLORES
+     Estilo "cuaderno": papel crema, tinta cálida, líneas suaves.
+     El navegador elige claro u oscuro según la preferencia del sistema.
+     --------------------------------------------------------------------------- */
+  :root {
+    --fond: #ece5d8;        /* fondo de la página */
+    --papier: #fcfaf4;      /* fondo del contenido (papel) */
+    --texte: #2a2520;       /* texto principal */
+    --texte-doux: #6b6154;  /* texto secundario (fechas, fuentes) */
+    --trait: #e2dacb;       /* líneas divisorias */
+    --lien: #8a5a2b;        /* enlaces */
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fond: #171513;
+      --papier: #221f1b;
+      --texte: #e8e2d8;
+      --texte-doux: #a49a8c;
+      --trait: #38332c;
+      --lien: #d9a173;
+    }
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--papier);
+  }
+
+  body {
+    color: var(--texte);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
+  }
+
+  a { color: var(--lien); }
+  a:hover { color: var(--texte); }
+
+  /* Contenedor central: columna estrecha, centrada, cómoda para leer. */
+  .page {
+    max-width: 660px;
+    margin: 0 auto;
+    padding: 32px 24px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+  }
+
+  /* ---------- CABECERA ---------- */
+  header {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    border-bottom: 1px solid var(--trait);
+    padding-bottom: 26px;
+  }
+
+  .ligne-titre {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  h1 {
+    margin: 0;
+    color: var(--texte);
+    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+    font-weight: 600;
+    font-size: 36px;
+    letter-spacing: -0.01em;
+    line-height: 1.05;
+  }
+
+  .compteur-sources {
+    font-size: 13px;
+    color: var(--texte-doux);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .sous-titre {
+    margin: 0;
+    font-size: 18px;
+    color: var(--texte-doux);
+    max-width: 34em;
+  }
+
+  .meta-date {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    font-size: 14px;
+    color: var(--texte-doux);
+  }
+
+  /* ---------- SELECTOR 3 / 5 / 10 ---------- */
+  .controles {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .controles .etiquette {
+    font-size: 13px;
+    color: var(--texte-doux);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .groupe-boutons {
+    display: flex;
+    gap: 6px;
+  }
+
+  .bouton-limite {
+    font: inherit;
+    font-size: 14px;
+    line-height: 1;
+    padding: 8px 14px;
+    border-radius: 999px;
+    cursor: pointer;
+    border: 1px solid var(--trait);
+    background: transparent;
+    color: var(--texte-doux);
+    transition: background .15s ease, color .15s ease, border-color .15s ease;
+  }
+
+  /* Botón activo: relleno oscuro, texto claro. */
+  .bouton-limite.actif {
+    border-color: var(--texte);
+    background: var(--texte);
+    color: var(--fond);
+  }
+
+  /* ---------- SECCIONES POR REGIÓN ---------- */
+  section { display: block; }
+
+  .titre-region {
+    margin: 0 0 4px;
+    font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--texte);
+  }
+
+  /* ---------- NOTICIA (título + resumen desplegable) ---------- */
+  .nouvelle {
+    border-top: 1px solid var(--trait);
+  }
+
+  /* El título es un botón de ancho completo (accesible con teclado y toque). */
+  .titre-nouvelle {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    width: 100%;
+    padding: 18px 0 16px;
+    margin: 0;
+    background: transparent;
+    border: none;
+    font: inherit;
+    color: var(--texte);
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .titre-texte {
+    font-size: 18px;
+    line-height: 1.4;
+  }
+
+  .titre-texte .source {
+    display: block;
+    margin-top: 4px;
+    font-size: 13px;
+    color: var(--texte-doux);
+    letter-spacing: 0.03em;
+  }
+
+  /* La cruz "+" que gira a "×" cuando el resumen está abierto. */
+  .fleche {
+    font-size: 20px;
+    line-height: 26px;
+    color: var(--texte-doux);
+    flex: none;
+    user-select: none;
+    transition: transform .3s ease;
+  }
+
+  /* El truco del acordeón: una rejilla que pasa de 0fr (cerrada) a 1fr (abierta).
+     Anima la altura suavemente sin necesitar JavaScript para medir píxeles. */
+  .grille-resume {
+    display: grid;
+    grid-template-rows: 0fr;
+    opacity: 0;
+    transition: grid-template-rows .3s ease, opacity .3s ease;
+  }
+
+  .grille-resume > .interieur {
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .contenu-resume {
+    padding: 0 0 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .contenu-resume p {
+    margin: 0;
+    font-size: 18px;
+    line-height: 1.6;
+    color: var(--texte);
+    max-width: 64ch;
+  }
+
+  .lien-source {
+    font-size: 14px;
+    letter-spacing: 0.03em;
+    text-decoration: none;
+    border-bottom: 1px solid currentColor;
+    align-self: flex-start;
+    padding-bottom: 1px;
+  }
+
+  /* Estado ABIERTO: aplicado por JavaScript al hacer clic/tocar,
+     o por CSS al pasar el cursor en desktop (ver más abajo). */
+  .nouvelle.ouverte .grille-resume {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+  .nouvelle.ouverte .fleche {
+    transform: rotate(45deg);
+  }
+
+  /* ---------- REVELACIÓN AL PASAR EL CURSOR (solo desktop) ----------
+     Solo en dispositivos con cursor real (hover). En móvil esto no aplica
+     y manda el clic/toque gestionado por JavaScript. */
+  @media (hover: hover) {
+    .nouvelle:hover .grille-resume {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+    .nouvelle:hover .fleche {
+      transform: rotate(45deg);
+    }
+  }
+
+  /* ---------- PIE ---------- */
+  footer {
+    border-top: 1px solid var(--trait);
+    padding-top: 20px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--texte-doux);
+  }
+
+  /* ---------- MOVIMIENTO REDUCIDO ----------
+     Si el usuario prefiere menos animación, desactivamos las transiciones. */
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+
+<body>
+<div class="page">
+
+  <header>
+    <div class="ligne-titre">
+      <h1>DodoNews</h1>
+      <span class="compteur-sources" id="compteur-sources"></span>
+    </div>
+    <p class="sous-titre">Les infos du matin en quelques mots</p>
+    <div class="meta-date">
+      <span id="date-du-jour"></span>
+      <span aria-hidden="true">·</span>
+      <span id="heure-maj"></span>
+    </div>
+  </header>
+
+  <div class="controles">
+    <span class="etiquette">Par région</span>
+    <div class="groupe-boutons" id="groupe-limite"
+         role="group" aria-label="Nombre maximum de nouvelles par région">
+      <!-- Los botones 3 / 5 / 10 se crean con JavaScript -->
+    </div>
+  </div>
+
+  <!-- Aquí se insertan las regiones con sus noticias -->
+  <div id="regions"></div>
+
+  <footer>
+    DodoNews — résumés neutres générés à partir des articles d'origine. Bonne journée ☕
+  </footer>
+
+</div>
+
+<script>
+// ===========================================================================
+//  DATOS DE LAS NOTICIAS
+//  ---------------------------------------------------------------------------
+//  Para actualizar el diario, basta con reemplazar este objeto.
+//  Cada clave es una región, y contiene una lista de noticias.
+//  Cada noticia tiene: titre (título), resume (~30 palabras), source, lien.
+//
+//  NOTA: el script agregador.py reemplaza automáticamente el bloque entre
+//  las marcas DODONEWS_DATA. No edites esas marcas si usas el script.
+// ===========================================================================
+/* DODONEWS_DATA_DEBUT */
+const NOUVELLES = {
+  "France": [
+    { titre: "Le gouvernement présente son plan budgétaire pour l'automne",
+      resume: "L'exécutif détaille les grandes lignes du budget : économies sur le fonctionnement de l'État, maintien des crédits de la transition écologique. Le texte sera débattu au Parlement à la rentrée.",
+      source: "Le Monde", lien: "https://www.lemonde.fr" },
+    { titre: "Canicule : quinze départements placés en vigilance orange",
+      resume: "Météo-France annonce des températures dépassant localement 38 degrés dans le sud-ouest. Les autorités rappellent les consignes d'hydratation et la surveillance des personnes âgées isolées.",
+      source: "France 24", lien: "https://www.france24.com" },
+    { titre: "La SNCF annonce une hausse limitée des tarifs TGV",
+      resume: "L'entreprise ferroviaire évoque l'inflation des coûts d'énergie pour justifier l'ajustement. Les abonnements régionaux et les tarifs jeunes resteraient inchangés jusqu'à la fin de l'année.",
+      source: "Les Échos", lien: "https://www.lesechos.fr" }
+  ],
+  "Île-de-France": [
+    { titre: "Le prolongement de la ligne 11 entre en phase d'essais",
+      resume: "Les rames circulent désormais à vide sur le nouveau tronçon vers Rosny-Bois-Perrier. La mise en service commerciale est annoncée pour la fin du trimestre par Île-de-France Mobilités.",
+      source: "Le Parisien", lien: "https://www.leparisien.fr" },
+    { titre: "La Ville de Paris étend ses zones à circulation apaisée",
+      resume: "Quatre nouveaux quartiers passent à vingt kilomètres-heure. La municipalité met en avant la sécurité des piétons ; les associations de riverains demandent davantage de places de livraison.",
+      source: "France Bleu", lien: "https://www.francebleu.fr" }
+  ],
+  "Chili": [
+    { titre: "La banque centrale maintient son taux directeur inchangé",
+      resume: "L'institution évoque une inflation qui converge lentement vers sa cible. Les prévisions de croissance pour l'année sont légèrement révisées à la hausse, portées par les exportations minières.",
+      source: "Reuters", lien: "https://www.reuters.com" },
+    { titre: "Le cuivre atteint son plus haut niveau depuis six mois",
+      resume: "La demande liée aux véhicules électriques soutient les cours. Les analystes soulignent toutefois la fragilité des approvisionnements en eau dans les régions minières du nord du pays.",
+      source: "France 24", lien: "https://www.france24.com" }
+  ]
+};
+/* DODONEWS_DATA_FIN */
+
+// Hora de actualización mostrada en la cabecera.
+// El script la reemplaza con la hora real de generación.
+/* DODONEWS_HEURE_DEBUT */
+const HEURE_MAJ = "7h12";
+/* DODONEWS_HEURE_FIN */
+
+
+// ===========================================================================
+//  LÓGICA DE LA PÁGINA (JavaScript plano, sin librerías)
+// ===========================================================================
+
+// Estado: cuántas noticias mostrar por región. Empieza en 5.
+let limite = 5;
+
+// --- Cabecera: fecha y hora ---
+function remplirEnTete() {
+  const aujourdhui = new Date();
+  document.getElementById("date-du-jour").textContent =
+    aujourdhui.toLocaleDateString("fr-FR", {
+      weekday: "long", day: "numeric", month: "long", year: "numeric"
+    });
+
+  document.getElementById("heure-maj").textContent = "Mis à jour à " + HEURE_MAJ;
+
+  // Contamos las fuentes distintas del día (para "5 sources").
+  const fuentes = new Set();
+  Object.values(NOUVELLES).forEach(function (liste) {
+    liste.forEach(function (n) { fuentes.add(n.source); });
+  });
+  const total = fuentes.size;
+  document.getElementById("compteur-sources").textContent =
+    total + (total > 1 ? " sources" : " source");
+}
+
+// --- Selector 3 / 5 / 10 ---
+function construireBoutons() {
+  const groupe = document.getElementById("groupe-limite");
+  groupe.innerHTML = "";
+
+  [3, 5, 10].forEach(function (valeur) {
+    const bouton = document.createElement("button");
+    bouton.type = "button";
+    bouton.className = "bouton-limite" + (valeur === limite ? " actif" : "");
+    bouton.textContent = String(valeur);
+
+    bouton.addEventListener("click", function () {
+      limite = valeur;
+      construireBoutons();  // redibuja los botones (para marcar el activo)
+      construireRegions();  // redibuja la lista con el nuevo límite
+    });
+
+    groupe.appendChild(bouton);
+  });
+}
+
+// --- Una noticia: título clicable + resumen desplegable ---
+function construireNouvelle(n) {
+  const article = document.createElement("article");
+  article.className = "nouvelle";
+
+  // Botón del título (se puede pulsar con ratón, teclado o toque).
+  const bouton = document.createElement("button");
+  bouton.type = "button";
+  bouton.className = "titre-nouvelle";
+  bouton.setAttribute("aria-expanded", "false");
+
+  const titre = document.createElement("span");
+  titre.className = "titre-texte";
+  titre.textContent = n.titre;
+
+  const source = document.createElement("span");
+  source.className = "source";
+  source.textContent = n.source;
+  titre.appendChild(source);
+
+  const fleche = document.createElement("span");
+  fleche.className = "fleche";
+  fleche.setAttribute("aria-hidden", "true");
+  fleche.textContent = "+";
+
+  bouton.appendChild(titre);
+  bouton.appendChild(fleche);
+
+  // Zona del resumen (oculta hasta que se abre).
+  const grille = document.createElement("div");
+  grille.className = "grille-resume";
+
+  const interieur = document.createElement("div");
+  interieur.className = "interieur";
+
+  const contenu = document.createElement("div");
+  contenu.className = "contenu-resume";
+
+  const paragraphe = document.createElement("p");
+  paragraphe.textContent = n.resume;
+
+  const lien = document.createElement("a");
+  lien.className = "lien-source";
+  lien.href = n.lien;
+  lien.target = "_blank";
+  lien.rel = "noopener";
+  lien.textContent = "voir la source →";
+
+  contenu.appendChild(paragraphe);
+  contenu.appendChild(lien);
+  interieur.appendChild(contenu);
+  grille.appendChild(interieur);
+
+  // Al pulsar el título: abrir o cerrar el resumen.
+  // En desktop el hover ya lo muestra (vía CSS); el clic sirve para fijarlo.
+  // En móvil (sin hover) el clic es la única forma de abrirlo.
+  bouton.addEventListener("click", function () {
+    const ouverte = article.classList.toggle("ouverte");
+    bouton.setAttribute("aria-expanded", ouverte ? "true" : "false");
+  });
+
+  article.appendChild(bouton);
+  article.appendChild(grille);
+  return article;
+}
+
+// --- Todas las regiones, recortadas al límite elegido ---
+function construireRegions() {
+  const conteneur = document.getElementById("regions");
+  conteneur.innerHTML = "";
+
+  Object.keys(NOUVELLES).forEach(function (nomRegion) {
+    const liste = NOUVELLES[nomRegion].slice(0, limite);
+    if (liste.length === 0) return;
+
+    const section = document.createElement("section");
+
+    const titreRegion = document.createElement("h2");
+    titreRegion.className = "titre-region";
+    titreRegion.textContent = nomRegion;
+    section.appendChild(titreRegion);
+
+    liste.forEach(function (n) {
+      section.appendChild(construireNouvelle(n));
+    });
+
+    conteneur.appendChild(section);
+  });
+}
+
+// --- Arranque ---
+remplirEnTete();
+construireBoutons();
+construireRegions();
+</script>
+
+</body>
+</html>
