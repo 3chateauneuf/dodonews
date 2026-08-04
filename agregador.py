@@ -1,202 +1,391 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-DodoNews - Agrégateur de nouvelles matinal.
+Pruebas de agregador.py. No toca la red ni la API: el cliente Claude está
+simulado, y los feeds se sirven desde bytes locales.
 
-Qué hace este script, paso a paso:
-  1. Descarga los titulares de varias fuentes RSS (France, Île-de-France, Chili).
-  2. Pide a Claude que elija las más importantes y las resuma de forma neutra.
-  3. Inserta esos resúmenes en la plantilla 'template.html'.
-  4. Guarda el resultado en 'output/index.html', listo para publicar.
-
-El diseño de la página vive en template.html (HTML + CSS + JS legibles).
-Este script NO genera diseño: solo rellena los datos. Así, si quieres cambiar
-la apariencia, editas template.html sin tocar este código, y viceversa.
+    python3 test_agregador.py
 """
 
-import feedparser
 import json
-import os
-import re
-import urllib.request
-from datetime import datetime
-from anthropic import Anthropic
+import sys
+import types
+from pathlib import Path
+
+import anthropic
+
+import agregador as ag
+
+ag.time.sleep = lambda *_: None          # nada de esperas reales en los tests
+
+OK, FALLOS = 0, []
 
 
-# Algunos serveurs refusent les requêtes sans navigateur (erreur 403).
-# On se présente donc comme un navigateur classique.
-NAVIGATEUR = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-)
+def check(nombre, condicion, detalle=""):
+    global OK
+    if condicion:
+        OK += 1
+        print(f"  ✓ {nombre}")
+    else:
+        FALLOS.append(nombre)
+        print(f"  ✗ {nombre} {detalle}")
 
 
-# ---------------------------------------------------------------------------
-# FUENTES RSS
-# Añade o quita URLs libremente. Cada región es una clave.
-# ---------------------------------------------------------------------------
-FEEDS = {
-    "France": [
-        "https://www.france24.com/fr/rss",
-        "https://www.lemonde.fr/rss/une.xml",
-    ],
-    "Île-de-France": [
-        "https://feeds.leparisien.fr/leparisien/rss/paris-75",
-        "https://www.francebleu.fr/rss/paris/rubrique/infos.xml",
-    ],
-    "Chili": [
-        
-        "https://feeds.feedburner.com/radiobiobio/NNeJ",
-        "https://www.latercera.com/arc/outboundfeeds/rss/?outputType=xml",      
-        "https://www.eldinamo.cl/feed/",
-        "https://www.elmostrador.cl/feed/",
-    ],
+# --------------------------------------------------------------------------
+# Dobles de la API
+# --------------------------------------------------------------------------
+
+def bloque_texto(payload):
+    return types.SimpleNamespace(type="text", text=json.dumps(payload, ensure_ascii=False))
+
+
+def bloque_tool(payload):
+    return types.SimpleNamespace(type="tool_use", name="publier_nouvelles", input=payload)
+
+
+def respuesta(bloques, stop_reason="end_turn"):
+    return types.SimpleNamespace(content=bloques, stop_reason=stop_reason)
+
+
+class ClienteFalso:
+    """Devuelve/lanza lo que le pongas en `guion`, un elemento por llamada."""
+
+    def __init__(self, guion, soporta_output_config=True):
+        self.guion = list(guion)
+        self.soporta_output_config = soporta_output_config
+        self.llamadas = []
+        self.messages = types.SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        self.llamadas.append(kwargs)
+        if "output_config" in kwargs and not self.soporta_output_config:
+            raise TypeError(
+                "Messages.create() got an unexpected keyword argument 'output_config'"
+            )
+        siguiente = self.guion.pop(0)
+        if isinstance(siguiente, Exception):
+            raise siguiente
+        return siguiente
+
+
+PAYLOAD_OK = {
+    "France": [{
+        "titre": "Réforme des retraites : nouveau vote",
+        "resume": "L'Assemblée examine un amendement sur l'âge de départ.",
+        "source": "Le Monde",
+        "lien": "https://www.lemonde.fr/a1",
+    }],
+    "Île-de-France": [{
+        "titre": "RER B : travaux ce week-end",
+        "resume": "Interruption entre Gare du Nord et Denfert samedi.",
+        "source": "Le Parisien",
+        "lien": "https://www.leparisien.fr/b1",
+    }],
+    "Chili": [{
+        "titre": "Sismo de magnitud 5,2 en Valparaíso",
+        "resume": "Sans dégâts signalés selon l'ONEMI.",
+        "source": "Emol",
+        "lien": "https://www.emol.com/c1",
+    }],
 }
 
-# Cuántos titulares leer por fuente antes de pasárselos a Claude.
-# Claude elegirá luego los mejores; pedimos de más para que tenga dónde elegir.
-TITRES_PAR_FLUX = 8
+ORIGINALES = {
+    "France": [{"titre": "Réforme des retraites : nouveau vote", "source": "Le Monde",
+                "lien": "https://www.lemonde.fr/a1", "extrait": "brut"}],
+    "Île-de-France": [{"titre": "RER B : travaux ce week-end", "source": "Le Parisien",
+                       "lien": "https://www.leparisien.fr/b1", "extrait": "brut"}],
+    "Chili": [{"titre": "Sismo de magnitud 5,2 en Valparaíso", "source": "Emol",
+               "lien": "https://www.emol.com/c1", "extrait": "brut"}],
+}
 
-# Modelo de Claude usado para resumir. Sonnet es rápido, barato y suficiente
-# para sintetizar noticias. Cámbialo aquí si algún día quieres otro.
-MODELE = "claude-sonnet-4-6"
-
-
-def telecharger_flux(url):
-    """Descarga un feed presentándose como navegador. Devuelve el feed parseado.
-
-    Muchos servidores devuelven 403 si la petición no parece venir de un
-    navegador. Por eso descargamos con urllib enviando un User-Agent, y luego
-    se lo pasamos a feedparser ya descargado.
-    """
-    requete = urllib.request.Request(url, headers={"User-Agent": NAVIGATEUR})
-    with urllib.request.urlopen(requete, timeout=15) as reponse:
-        donnees = reponse.read()
-    return feedparser.parse(donnees)
+RSS = """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Test</title>
+<item><title>Titre un</title><link>https://ejemplo.fr/1</link>
+<description>&lt;p&gt;Un <b>résumé</b> avec du HTML.&lt;/p&gt;</description></item>
+<item><title>Titre deux</title><link>https://ejemplo.fr/2</link>
+<description>Deuxième</description></item>
+</channel></rss>""".encode("utf-8")
 
 
-def extraire_titres():
-    """Descarga los titulares de todas las fuentes y los agrupa por región.
+# --------------------------------------------------------------------------
+# 1. Feeds
+# --------------------------------------------------------------------------
 
-    Imprime un diagnóstico claro por cada feed: cuántos titulares trajo, o
-    exactamente qué error dio. Así, mirando el log de GitHub Actions, sabes
-    de un vistazo qué fuente funciona y cuál hay que reemplazar.
-    """
-    resultat = {}
-    for region, urls in FEEDS.items():
-        resultat[region] = []
-        print(f"\n  {region} :")
-        for url in urls:
-            try:
-                flux = telecharger_flux(url)
-                titres = flux.entries[:TITRES_PAR_FLUX]
-                for entree in titres:
-                    resultat[region].append({
-                        "titre": entree.get("title", ""),
-                        "lien": entree.get("link", "#"),
-                        "source": flux.feed.get("title", "Source"),
-                    })
-                print(f"    ✓ {len(titres):2d} titres — {url}")
-            except Exception as erreur:
-                # Mostramos el tipo de error (ej. HTTP 403, timeout) y la URL,
-                # para poder diagnosticar sin adivinar.
-                print(f"    ✗ ÉCHEC ({type(erreur).__name__}) — {url}")
-        print(f"    → total {region} : {len(resultat[region])} titres")
-    return resultat
+def test_feeds():
+    print("\n[1] Lectura de feeds")
+    original = ag.descargar
+
+    ag.descargar = lambda url, timeout=20: RSS
+    articulos = ag.leer_feed("Test", "https://ejemplo.fr/rss")
+    check("parsea 2 entradas", len(articulos) == 2, articulos)
+    check("campos correctos",
+          articulos[0]["titre"] == "Titre un"
+          and articulos[0]["lien"] == "https://ejemplo.fr/1"
+          and articulos[0]["source"] == "Test")
+    check("limpia el HTML del extracto",
+          "<" not in articulos[0]["extrait"] and "&" not in articulos[0]["extrait"]
+          and "résumé" in articulos[0]["extrait"],
+          articulos[0]["extrait"])
+
+    def explota(url, timeout=20):
+        raise ag.urllib.error.URLError("host inalcanzable")
+
+    ag.descargar = explota
+    check("un feed caído devuelve [] sin lanzar", ag.leer_feed("Roto", "https://x") == [])
+
+    ag.descargar = lambda url, timeout=20: b"esto no es xml"
+    check("basura no rompe el parseo", ag.leer_feed("Basura", "https://x") == [])
+
+    ag.descargar = original
 
 
-def resumer_avec_claude(titres):
-    """Pide a Claude que seleccione y resuma las noticias de forma neutra."""
-    client = Anthropic()
+# --------------------------------------------------------------------------
+# 2. Camino feliz
+# --------------------------------------------------------------------------
 
-    consigne = (
-        "Tu es le rédacteur de DodoNews, un résumé matinal minimaliste.\n"
-        "À partir des titres fournis pour chaque région :\n"
-        "  1. Choisis les nouvelles les plus importantes (jusqu'à 6 par région).\n"
-        "  2. Rédige pour chacune un résumé NEUTRE et factuel de 30 mots maximum,\n"
-        "     sans opinion, sans adjectif inutile.\n"
-        "  3. Reformule le titre de façon claire (ne copie pas mot à mot).\n"
-        "  4. Conserve le nom de la source et le lien d'origine.\n\n"
-        "Titres du jour :\n"
-        f"{json.dumps(titres, ensure_ascii=False, indent=2)}\n\n"
-        "Réponds UNIQUEMENT avec ce JSON, sans aucun texte autour :\n"
-        '{\n'
-        '  "France": [\n'
-        '    {"titre": "...", "resume": "...", "source": "...", "lien": "..."}\n'
-        '  ],\n'
-        '  "Île-de-France": [ ... ],\n'
-        '  "Chili": [ ... ]\n'
-        '}'
-    )
+def test_camino_feliz():
+    print("\n[2] Camino feliz (output_config)")
+    cliente = ClienteFalso([respuesta([bloque_texto(PAYLOAD_OK)])])
+    datos = ag.resumir(ORIGINALES, cliente=cliente)
 
-    reponse = client.messages.create(
-        model=MODELE,
-        max_tokens=2500,
-        messages=[{"role": "user", "content": consigne}],
-    )
+    check("una sola llamada", len(cliente.llamadas) == 1)
+    kwargs = cliente.llamadas[0]
+    check("usa output_config", "output_config" in kwargs)
+    check("no manda tools", "tools" not in kwargs)
+    check("modelo correcto", kwargs["model"] == "claude-sonnet-4-6")
+    esq = kwargs["output_config"]["format"]["schema"]
+    check("esquema con las 3 regiones", esq["required"] == ag.REGIONES)
+    check("campos obligatorios en cada noticia",
+          esq["properties"]["France"]["items"]["required"] == list(ag.CAMPOS))
+    check("devuelve las 3 regiones", set(datos) == set(ag.REGIONES))
+    check("noticia intacta", datos["Chili"][0]["source"] == "Emol")
 
-    texte = reponse.content[0].text
 
-    # Claude debería devolver JSON puro, pero por seguridad extraemos el objeto
-    # si viniera rodeado de texto.
+# --------------------------------------------------------------------------
+# 3. Reintentos
+# --------------------------------------------------------------------------
+
+def test_reintentos():
+    print("\n[3] Reintentos")
+
+    err_conexion = anthropic.APIConnectionError(request=types.SimpleNamespace())
+    cliente = ClienteFalso([err_conexion, respuesta([bloque_texto(PAYLOAD_OK)])])
+    datos = ag.resumir(ORIGINALES, cliente=cliente)
+    check("se recupera de un error de conexión", len(datos["France"]) == 1)
+    check("ha llamado 2 veces", len(cliente.llamadas) == 2)
+
+    cliente = ClienteFalso([
+        respuesta([bloque_texto(PAYLOAD_OK)], stop_reason="max_tokens"),
+        respuesta([bloque_texto(PAYLOAD_OK)]),
+    ])
+    ag.resumir(ORIGINALES, cliente=cliente)
+    check("sube max_tokens tras truncamiento",
+          cliente.llamadas[1]["max_tokens"] > cliente.llamadas[0]["max_tokens"],
+          [c["max_tokens"] for c in cliente.llamadas])
+
+    # El fallo histórico: JSON roto en el texto. Con output_config no debería
+    # ocurrir, pero si ocurriera se reintenta en vez de reventar el script.
+    roto = types.SimpleNamespace(type="text", text='{"France": [{"titre": "a" "resume": "b"}]}')
+    cliente = ClienteFalso([respuesta([roto]), respuesta([bloque_texto(PAYLOAD_OK)])])
+    datos = ag.resumir(ORIGINALES, cliente=cliente)
+    check("JSONDecodeError se reintenta, no se propaga", len(datos["Chili"]) == 1)
+
+    cliente = ClienteFalso([err_conexion, err_conexion, err_conexion])
     try:
-        return json.loads(texte)
-    except json.JSONDecodeError:
-        trouve = re.search(r"\{.*\}", texte, re.DOTALL)
-        if trouve:
-            return json.loads(trouve.group())
-        raise
+        ag.resumir(ORIGINALES, cliente=cliente)
+        check("agota los intentos y lanza ErrorAgregador", False)
+    except ag.ErrorAgregador:
+        check("agota los intentos y lanza ErrorAgregador", True)
+        check("exactamente 3 intentos", len(cliente.llamadas) == 3)
 
 
-def formater_donnees_js(donnees):
-    """Convierte el diccionario de noticias en el objeto JavaScript NOUVELLES."""
-    # json.dumps produce un objeto válido también en JavaScript.
-    # ensure_ascii=False conserva los acentos; indent=2 lo deja legible.
-    corps = json.dumps(donnees, ensure_ascii=False, indent=2)
-    return "const NOUVELLES = " + corps + ";"
+# --------------------------------------------------------------------------
+# 4. Respaldo tool use
+# --------------------------------------------------------------------------
+
+def test_respaldo_tools():
+    print("\n[4] Respaldo con tool use")
+    cliente = ClienteFalso([respuesta([bloque_tool(PAYLOAD_OK)])],
+                           soporta_output_config=False)
+    datos = ag.resumir(ORIGINALES, cliente=cliente)
+    check("cae a tool use con SDK viejo", len(cliente.llamadas) == 2)
+    check("segunda llamada con tools", "tools" in cliente.llamadas[1])
+    check("tool_choice forzado",
+          cliente.llamadas[1]["tool_choice"] == {"type": "tool", "name": "publier_nouvelles"})
+    check("strict activado", cliente.llamadas[1]["tools"][0]["strict"] is True)
+    check("lee el bloque tool_use", datos["France"][0]["source"] == "Le Monde")
 
 
-def construire_page(donnees, heure):
-    """Lee template.html y sustituye los datos y la hora entre las marcas."""
-    with open("template.html", encoding="utf-8") as f:
-        modele = f.read()
+# --------------------------------------------------------------------------
+# 5. Validación
+# --------------------------------------------------------------------------
 
-    # Reemplazo del bloque de datos, delimitado por las marcas del template.
-    bloc_donnees = formater_donnees_js(donnees)
-    modele = re.sub(
-        r"/\* DODONEWS_DATA_DEBUT \*/.*?/\* DODONEWS_DATA_FIN \*/",
-        "/* DODONEWS_DATA_DEBUT */\n" + bloc_donnees + "\n/* DODONEWS_DATA_FIN */",
-        modele,
-        flags=re.DOTALL,
-    )
+def test_validacion():
+    print("\n[5] Validación / normalización")
+    sucio = {
+        "France": [
+            {"titre": "Bien", "resume": "ok", "source": "Le Monde",
+             "lien": "https://www.lemonde.fr/a1"},
+            {"titre": "Sin resumen", "resume": "", "source": "X", "lien": "https://x.fr"},
+            {"titre": "Enlace malo", "resume": "ok", "source": "X", "lien": "javascript:alert(1)"},
+            "esto no es un objeto",
+        ],
+        "Île-de-France": [
+            {"titre": "RER B : travaux ce week-end", "resume": "ok", "source": "Le Parisien",
+             "lien": "https://inventado.example/xyz"},   # enlace alucinado
+        ],
+        # falta "Chili"
+        "Marte": [{"titre": "z", "resume": "z", "source": "z", "lien": "https://z"}],
+    }
+    limpio = ag.validar(sucio, ORIGINALES)
+    check("las 3 regiones siempre presentes", set(limpio) == set(ag.REGIONES))
+    check("región ausente → lista vacía", limpio["Chili"] == [])
+    check("región inventada descartada", "Marte" not in limpio)
+    check("descarta entradas incompletas o no-objeto", len(limpio["France"]) == 1, limpio["France"])
+    check("descarta esquemas de enlace raros",
+          all(n["lien"].startswith("http") for n in limpio["France"]))
+    check("repara el enlace alucinado por título",
+          limpio["Île-de-France"][0]["lien"] == "https://www.leparisien.fr/b1",
+          limpio["Île-de-France"][0]["lien"])
 
-    # Reemplazo de la hora de actualización.
-    modele = re.sub(
-        r"/\* DODONEWS_HEURE_DEBUT \*/.*?/\* DODONEWS_HEURE_FIN \*/",
-        '/* DODONEWS_HEURE_DEBUT */\nconst HEURE_MAJ = "' + heure + '";\n/* DODONEWS_HEURE_FIN */',
-        modele,
-        flags=re.DOTALL,
-    )
+    try:
+        ag.validar({"France": [], "Île-de-France": [], "Chili": []}, ORIGINALES)
+        check("respuesta vacía → ErrorAgregador", False)
+    except ag.ErrorAgregador:
+        check("respuesta vacía → ErrorAgregador", True)
 
-    return modele
+    try:
+        ag.validar(["lista"], ORIGINALES)
+        check("tipo raíz erróneo → ErrorAgregador", False)
+    except ag.ErrorAgregador:
+        check("tipo raíz erróneo → ErrorAgregador", True)
 
+    degradado = ag.sin_ia(ORIGINALES)
+    check("modo degradado produce las 3 regiones",
+          all(len(degradado[r]) == 1 for r in ag.REGIONES))
+
+
+# --------------------------------------------------------------------------
+# 6. Inyección en la plantilla
+# --------------------------------------------------------------------------
+
+PLANTILLA_TEST = """<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><title>DodoNews</title></head>
+<body><div id="app"></div>
+<script>
+/* DODONEWS_DATA_DEBUT */
+const NOUVELLES = {};
+/* DODONEWS_DATA_FIN */
+render(NOUVELLES);
+</script>
+</body></html>
+"""
+
+
+def test_inyeccion(tmp: Path):
+    print("\n[6] Inyección en template.html")
+    plantilla = tmp / "template.html"
+    salida = tmp / "index.html"
+    plantilla.write_text(PLANTILLA_TEST, encoding="utf-8")
+
+    peligroso = json.loads(json.dumps(PAYLOAD_OK))
+    peligroso["France"][0]["resume"] = "Fin de la balise </script><script>alert(1)</script>"
+    peligroso["Chili"][0]["titre"] = "Acentos: ñ é î — Valparaíso"
+
+    html = ag.inyectar(peligroso, plantilla, salida)
+    check("escribe index.html", salida.exists())
+    check("conserva el resto de la plantilla", "render(NOUVELLES);" in html and "<div id=\"app\">" in html)
+    check("marcas conservadas", ag.MARCA_INICIO in html and ag.MARCA_FIN in html)
+    check("añade la fecha de actualización", "MISE_A_JOUR" in html)
+    check("no hay </script> suelto en los datos",
+          html.count("</script>") == 1, html.count("</script>"))
+    check("acentos sin escapar (ensure_ascii=False)", "Valparaíso" in html)
+
+    # El JSON incrustado se puede volver a parsear.
+    cuerpo = html.split(ag.MARCA_INICIO)[1].split(ag.MARCA_FIN)[0]
+    crudo = cuerpo.split("const NOUVELLES =", 1)[1].rsplit(";", 1)[0]
+    crudo = crudo.rsplit("const MISE_A_JOUR", 1)[0].rstrip().rstrip(";")
+    vuelta = json.loads(crudo.replace("<\\/", "</"))
+    check("el JSON incrustado se reparsea", set(vuelta) == set(ag.REGIONES))
+    check("contenido idéntico al de entrada",
+          vuelta["France"][0]["titre"] == peligroso["France"][0]["titre"])
+
+    # Idempotencia: reinyectar sobre la salida anterior.
+    segunda = ag.inyectar(PAYLOAD_OK, salida, salida)
+    check("reinyectable sobre su propia salida",
+          segunda.count(ag.MARCA_INICIO) == 1 and "alert(1)" not in segunda)
+
+    sin_marcas = tmp / "malo.html"
+    sin_marcas.write_text("<html>sin marcas</html>", encoding="utf-8")
+    try:
+        ag.inyectar(PAYLOAD_OK, sin_marcas, tmp / "out2.html")
+        check("plantilla sin marcas → error claro", False)
+    except ag.ErrorAgregador:
+        check("plantilla sin marcas → error claro", True)
+
+
+# --------------------------------------------------------------------------
+# 7. main() de extremo a extremo
+# --------------------------------------------------------------------------
+
+def test_main(tmp: Path):
+    print("\n[7] main() completo")
+    plantilla = tmp / "template.html"
+    salida = tmp / "index_e2e.html"
+    plantilla.write_text(PLANTILLA_TEST, encoding="utf-8")
+
+    ag.PLANTILLA, ag.SALIDA = plantilla, salida
+    ag.descargar = lambda url, timeout=20: RSS
+    ag.FEEDS = {r: [(f"Fuente {r}", "https://ejemplo/rss")] for r in ag.REGIONES}
+
+    payload = {r: [{"titre": "Titre un", "resume": "Résumé court.",
+                    "source": f"Fuente {r}", "lien": "https://ejemplo.fr/1"}]
+               for r in ag.REGIONES}
+    cliente = ClienteFalso([respuesta([bloque_texto(payload)])])
+    ag.anthropic.Anthropic = lambda *a, **k: cliente
+
+    codigo = ag.main()
+    check("main() devuelve 0", codigo == 0)
+    check("index.html generado", salida.exists() and "Résumé court." in salida.read_text(encoding="utf-8"))
+
+    # Ahora con la API caída del todo → modo degradado, sin excepción.
+    err = anthropic.APIConnectionError(request=types.SimpleNamespace())
+    ag.anthropic.Anthropic = lambda *a, **k: ClienteFalso([err, err, err])
+    codigo = ag.main()
+    contenido = salida.read_text(encoding="utf-8")
+    check("modo degradado: main() sigue devolviendo 0", codigo == 0)
+    check("modo degradado publica los titulares crudos",
+          "Titre un" in contenido and "Résumé court." not in contenido)
+
+    # Sin ningún feed vivo → no toca index.html y sale con 1.
+    antes = salida.read_text(encoding="utf-8")
+    ag.descargar = lambda url, timeout=20: b""
+    codigo = ag.main()
+    check("sin feeds: código de salida 1", codigo == 1)
+    check("sin feeds: no sobrescribe index.html",
+          salida.read_text(encoding="utf-8") == antes)
+
+
+# --------------------------------------------------------------------------
 
 def main():
-    print("1/3  Récupération des titres…")
-    titres = extraire_titres()
+    tmp = Path("/tmp/dodonews_test")
+    tmp.mkdir(exist_ok=True)
+    test_feeds()
+    test_camino_feliz()
+    test_reintentos()
+    test_respaldo_tools()
+    test_validacion()
+    test_inyeccion(tmp)
+    test_main(tmp)
 
-    print("2/3  Résumé par Claude…")
-    donnees = resumer_avec_claude(titres)
-
-    print("3/3  Génération de la page…")
-    heure = datetime.now().strftime("%Hh%M")
-    page = construire_page(donnees, heure)
-
-    os.makedirs("output", exist_ok=True)
-    with open("output/index.html", "w", encoding="utf-8") as f:
-        f.write(page)
-
-    print("✓  Terminé : output/index.html")
+    print(f"\n{'=' * 52}")
+    if FALLOS:
+        print(f"{OK} OK · {len(FALLOS)} FALLOS: {FALLOS}")
+        return 1
+    print(f"TODO VERDE: {OK} comprobaciones")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
