@@ -392,7 +392,6 @@ def inyectar(datos: dict, plantilla=None, salida=None) -> str:
     bloque = (
         f"{MARCA_INICIO}\n"
         f"const NOUVELLES = {serializar(datos)};\n"
-        f"const MISE_A_JOUR = \"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\";\n"
         f"{MARCA_FIN}"
     )
     nuevo = html[:inicio] + bloque + html[fin + len(MARCA_FIN):]
