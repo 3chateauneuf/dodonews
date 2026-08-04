@@ -2,7 +2,7 @@ name: DodoNews - Nouvelles du matin
 
 on:
   schedule:
-    - cron: '0 7 * * *'
+    - cron: '30 3 * * *'
   workflow_dispatch:
 
 jobs:
