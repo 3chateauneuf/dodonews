@@ -44,10 +44,14 @@ FEEDS = {
         "https://www.francebleu.fr/rss/paris/rubrique/infos.xml",
     ],
     "Chili": [
-        # Note : ces flux couvrent l'Amérique latine, pas uniquement le Chili.
-        # Ils viennent de domaines qui répondent de façon fiable.
-        "https://www.france24.com/fr/am%C3%A9riques/rss",
-        "https://www.rfi.fr/fr/am%C3%A9riques/rss",
+        # BioBio via FeedBurner (Google) : contourne le blocage du serveur direct.
+        "https://feeds.feedburner.com/radiobiobio/NNeJ",
+        # La Tercera, quotidien national de référence.
+        "https://www.latercera.com/arc/outboundfeeds/rss/?outputType=xml",
+          # El Dínamo — actualité nationale (WordPress /feed/, très fiable).
+        "https://www.eldinamo.cl/feed/",
+        # El Mostrador — média de référence, politique et affaires publiques.
+        "https://www.elmostrador.cl/feed/",
     ],
 }
 
