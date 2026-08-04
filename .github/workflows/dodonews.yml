@@ -20,7 +20,12 @@ jobs:
       - name: Générer les nouvelles
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: python agregador.py
+          # Le site publié est le dossier 'output' (voir upload-pages-artifact
+          # plus bas), donc le script doit écrire son index.html là-dedans.
+          DODONEWS_OUTPUT: output/index.html
+        run: |
+          mkdir -p output
+          python agregador.py
 
       - uses: actions/upload-pages-artifact@v3
         with:
