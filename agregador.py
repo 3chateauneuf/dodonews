@@ -26,6 +26,7 @@ import urllib.request
 from datetime import datetime, timezone
 from html import unescape
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import anthropic
 import feedparser
@@ -62,9 +63,9 @@ USER_AGENT = (
 )
 TIMEOUT = 20
 
-MAX_POR_FEED = 12          # titulares que se leen de cada feed
-MAX_POR_REGION = 14        # titulares que se mandan al modelo por región
-NOTICIAS_DESEADAS = 6      # noticias que pedimos de vuelta por región
+MAX_POR_FEED = 15          # titulares que se leen de cada feed
+MAX_POR_REGION = 20        # titulares que se mandan al modelo por región
+NOTICIAS_DESEADAS = 10     # noticias por región (= botón máximo de la plantilla)
 
 MAX_INTENTOS = 3
 ESPERA_BASE = 2.0          # segundos; backoff exponencial 2, 4, 8...
@@ -73,6 +74,9 @@ PLANTILLA = Path(os.environ.get("DODONEWS_TEMPLATE", "template.html"))
 SALIDA = Path(os.environ.get("DODONEWS_OUTPUT", "index.html"))
 MARCA_INICIO = "/* DODONEWS_DATA_DEBUT */"
 MARCA_FIN = "/* DODONEWS_DATA_FIN */"
+MARCA_HORA_INICIO = "/* DODONEWS_HEURE_DEBUT */"
+MARCA_HORA_FIN = "/* DODONEWS_HEURE_FIN */"
+ZONA = "Europe/Paris"
 
 CAMPOS = ("titre", "resume", "source", "lien")
 
@@ -377,26 +381,46 @@ def serializar(datos: dict) -> str:
     )
 
 
+def _reemplazar(html: str, inicio: str, fin: str, contenido: str, obligatorio: bool) -> str:
+    """Sustituye lo que hay entre dos marcas, conservándolas (idempotente)."""
+    i = html.find(inicio)
+    f = html.find(fin)
+    if i == -1 or f == -1 or f < i:
+        if obligatorio:
+            raise ErrorAgregador(f"marcas {inicio} / {fin} no encontradas en la plantilla")
+        print(f"  ! marcas {inicio} ausentes, bloque omitido")
+        return html
+    return html[:i] + f"{inicio}\n{contenido}\n{fin}" + html[f + len(fin):]
+
+
+def hora_local() -> str:
+    """Hora de generación en formato francés (7h12), en hora de París."""
+    try:
+        ahora = datetime.now(ZoneInfo(ZONA))
+    except Exception:                      # runner sin tzdata
+        ahora = datetime.now(timezone.utc)
+    return f"{ahora.hour}h{ahora.minute:02d}"
+
+
 def inyectar(datos: dict, plantilla=None, salida=None) -> str:
-    """Reemplaza el bloque entre las marcas. Idempotente: conserva las marcas."""
+    """Rellena los dos bloques marcados de la plantilla y escribe la salida."""
     plantilla = Path(plantilla) if plantilla else PLANTILLA
     salida = Path(salida) if salida else SALIDA
     html = plantilla.read_text(encoding="utf-8")
-    inicio = html.find(MARCA_INICIO)
-    fin = html.find(MARCA_FIN)
-    if inicio == -1 or fin == -1 or fin < inicio:
-        raise ErrorAgregador(
-            f"marcas {MARCA_INICIO} / {MARCA_FIN} no encontradas en {plantilla}"
-        )
 
-    bloque = (
-        f"{MARCA_INICIO}\n"
-        f"const NOUVELLES = {serializar(datos)};\n"
-        f"{MARCA_FIN}"
+    html = _reemplazar(
+        html, MARCA_INICIO, MARCA_FIN,
+        f"const NOUVELLES = {serializar(datos)};",
+        obligatorio=True,
     )
-    nuevo = html[:inicio] + bloque + html[fin + len(MARCA_FIN):]
-    salida.write_text(nuevo, encoding="utf-8")
-    return nuevo
+    html = _reemplazar(
+        html, MARCA_HORA_INICIO, MARCA_HORA_FIN,
+        f'const HEURE_MAJ = "{hora_local()}";',
+        obligatorio=False,
+    )
+
+    salida.write_text(html, encoding="utf-8")
+    return html
 
 
 # --------------------------------------------------------------------------
