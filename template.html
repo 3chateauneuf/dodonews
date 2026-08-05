@@ -3,7 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>DodoNews</title>
+
+<!-- Tema : fixe data-theme AVANT le rendu du body, pour éviter tout
+     clignotement de couleur au chargement (flash of wrong theme). -->
+<script>
+  (function () {
+    try {
+      var t = localStorage.getItem("dodonews-theme") || "auto";
+      document.documentElement.setAttribute("data-theme", t);
+    } catch (e) { /* localStorage indisponible : on reste en auto */ }
+  })();
+</script>
 
 <style>
   /* ---------------------------------------------------------------------------
@@ -11,7 +23,9 @@
      Estilo "cuaderno": papel crema, tinta cálida, líneas suaves.
      El navegador elige claro u oscuro según la preferencia del sistema.
      --------------------------------------------------------------------------- */
-  :root {
+  /* Claro por defecto; también cuando el usuario fuerza data-theme="light". */
+  :root,
+  :root[data-theme="light"] {
     --fond: #ece5d8;        /* fondo de la página */
     --papier: #fcfaf4;      /* fondo del contenido (papel) */
     --texte: #2a2520;       /* texto principal */
@@ -20,6 +34,7 @@
     --lien: #8a5a2b;        /* enlaces */
   }
 
+  /* AUTO (sin data-theme o data-theme="auto"): sigue la preferencia del SO. */
   @media (prefers-color-scheme: dark) {
     :root {
       --fond: #171513;
@@ -29,6 +44,18 @@
       --trait: #38332c;
       --lien: #d9a173;
     }
+  }
+
+  /* Oscuro forzado por el usuario. El selector con [data-theme] tiene más
+     especificidad que el :root del media query, así que gana siempre,
+     independientemente del orden en la hoja. */
+  :root[data-theme="dark"] {
+    --fond: #171513;
+    --papier: #221f1b;
+    --texte: #e8e2d8;
+    --texte-doux: #a49a8c;
+    --trait: #38332c;
+    --lien: #d9a173;
   }
 
   html, body {
@@ -145,6 +172,29 @@
     border-color: var(--texte);
     background: var(--texte);
     color: var(--fond);
+  }
+
+  /* ---------- SELECTOR DE TEMA (auto / claro / oscuro) ----------
+     Botón discreto que cicla entre los tres estados. Se empuja al
+     extremo derecho de la barra de controles con margin-left:auto. */
+  .bouton-theme {
+    margin-left: auto;
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    padding: 8px 12px;
+    border-radius: 999px;
+    cursor: pointer;
+    border: 1px solid var(--trait);
+    background: transparent;
+    color: var(--texte-doux);
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+    transition: color .15s ease, border-color .15s ease;
+  }
+  .bouton-theme:hover {
+    color: var(--texte);
+    border-color: var(--texte-doux);
   }
 
   /* ---------- SECCIONES POR REGIÓN ---------- */
@@ -303,6 +353,8 @@
          role="group" aria-label="Nombre maximum de nouvelles par région">
       <!-- Los botones 3 / 5 / 10 se crean con JavaScript -->
     </div>
+    <!-- El texto/aria-label lo pone JavaScript según el tema activo. -->
+    <button type="button" class="bouton-theme" id="bouton-theme"></button>
   </div>
 
   <!-- Aquí se insertan las regiones con sus noticias -->
@@ -370,6 +422,37 @@ const HEURE_MAJ = "7h12";
 
 // Estado: cuántas noticias mostrar por región. Empieza en 5.
 let limite = 5;
+
+// --- Selector de tema: auto → clair → sombre → auto ---
+const THEMES = ["auto", "light", "dark"];
+const ETIQUETTE_THEME = { auto: "◐ Auto", light: "☀ Clair", dark: "☾ Sombre" };
+const NOM_THEME = { auto: "automatique", light: "clair", dark: "sombre" };
+
+function themeActuel() {
+  try { return localStorage.getItem("dodonews-theme") || "auto"; }
+  catch (e) { return "auto"; }
+}
+
+function appliquerTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const bouton = document.getElementById("bouton-theme");
+  if (bouton) {
+    bouton.textContent = ETIQUETTE_THEME[theme];
+    bouton.setAttribute(
+      "aria-label", "Thème : " + NOM_THEME[theme] + " — cliquer pour changer");
+  }
+}
+
+function initTheme() {
+  appliquerTheme(themeActuel());
+  const bouton = document.getElementById("bouton-theme");
+  if (!bouton) return;
+  bouton.addEventListener("click", function () {
+    const suivant = THEMES[(THEMES.indexOf(themeActuel()) + 1) % THEMES.length];
+    try { localStorage.setItem("dodonews-theme", suivant); } catch (e) {}
+    appliquerTheme(suivant);
+  });
+}
 
 // --- Cabecera: fecha y hora ---
 function remplirEnTete() {
@@ -503,6 +586,7 @@ function construireRegions() {
 }
 
 // --- Arranque ---
+initTheme();
 remplirEnTete();
 construireBoutons();
 construireRegions();

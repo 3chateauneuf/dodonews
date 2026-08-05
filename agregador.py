@@ -52,8 +52,8 @@ FEEDS = {
         ("France Info IDF", "https://www.francetvinfo.fr/france/ile-de-france.rss"),
     ],
     "Chili": [
-        ("Emol", "https://www.emol.com/rss/rss.asp?canal=todas"),
-        ("BioBioChile", "https://www.biobiochile.cl/lista/rss/portada.xml"),
+        ("La Tercera", "https://www.latercera.com/arc/outboundfeeds/rss/?outputType=xml"),
+        ("La Nación", "https://www.lanacion.cl/feed/"),
     ],
 }
 
@@ -137,18 +137,34 @@ def _limpiar(bruto: str) -> str:
 
 
 def recolectar() -> dict[str, list[dict]]:
-    """Recorre todos los feeds y agrupa por región."""
+    """Recorre todos los feeds y agrupa por región.
+
+    Distingue dos situaciones:
+      - un feed cae pero la región sobrevive gracias a otro → solo AVISO;
+      - todos los feeds de una región caen → la región queda vacía y
+        `main` lo tratará como error (salida en rojo).
+    """
     resultado: dict[str, list[dict]] = {}
     for region in REGIONES:
         print(f"[{region}]")
         articulos: list[dict] = []
         vistos: set[str] = set()
-        for fuente, url in FEEDS.get(region, []):
-            for articulo in leer_feed(fuente, url):
+        feeds = FEEDS.get(region, [])
+        caidos = 0
+        for fuente, url in feeds:
+            leidos = leer_feed(fuente, url)
+            if not leidos:
+                caidos += 1          # leer_feed ya imprimió el ✗ detallado
+            for articulo in leidos:
                 if articulo["lien"] not in vistos:
                     vistos.add(articulo["lien"])
                     articulos.append(articulo)
         resultado[region] = articulos[:MAX_POR_REGION]
+
+        # Aviso no bloqueante: la región tiene contenido pese a algún feed muerto.
+        if caidos and articulos:
+            print(f"  ⚠ AVERTISSEMENT : {caidos}/{len(feeds)} flux muet(s) pour "
+                  f"« {region} », mais la région tient avec {len(resultado[region])} titres.")
         print(f"  → {len(resultado[region])} titulares retenidos\n")
     return resultado
 
@@ -444,6 +460,19 @@ def main() -> int:
     inyectar(noticias)
     total = sum(len(v) for v in noticias.values())
     print(f"\n✓ {SALIDA} generado con {total} noticias.")
+    for region in REGIONES:
+        print(f"    {region}: {len(noticias.get(region, []))}")
+
+    # Guardia anti-fallo-silencioso: una región vacía = todos sus feeds cayeron.
+    # Publicamos lo que hay, pero salimos en ROJO (código 1) para que la corrida
+    # de GitHub Actions se ponga en rojo y el fallo no pase desapercibido.
+    vacias = [r for r in REGIONES if not noticias.get(r)]
+    if vacias:
+        print(f"\n✗ ERREUR : région(s) sans aucune nouvelle : {', '.join(vacias)}.")
+        print("  Tous les flux de ces régions sont probablement morts "
+              "(voir les ✗ ci-dessus). Sortie en erreur pour alerter Actions.")
+        return 1
+
     return 0
 
 
